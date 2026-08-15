@@ -379,6 +379,16 @@ sudo ./scripts/setup.sh update-relay \
 
 Значения — из `exit-server-info.txt`. `--hysteria-port-end` можно не указывать (по умолчанию port + 1000).
 
+То же самое для TUIC v5, если он был добавлен на exit после первоначальной настройки relay:
+
+```bash
+sudo ./scripts/setup.sh update-relay \
+  --tuic-port 44300 \
+  --tuic-password mypassword
+```
+
+Значения — `TUIC_PORT`/`TUIC_PASSWORD` из `exit-server-info.txt`. Оба флага нужны только при первом добавлении TUIC к уже настроенному relay — при последующих `update-relay` без флагов ссылка пересобирается сама из сохранённых в systemd-юните `sub-proxy` значений.
+
 Для обновления бинарников (XRAY, 3X-UI, Caddy) добавьте `--upgrade`:
 
 ```bash
@@ -424,6 +434,8 @@ x-ui log
 | `--hysteria-port` | update-relay | Порт Hysteria 2 на exit-сервере |
 | `--hysteria-port-end` | update-relay | Конец диапазона портов (по умолчанию port + 1000) |
 | `--hysteria-obfs` | update-relay | Пароль обфускации Salamander |
+| `--tuic-port` | update-relay | Порт TUIC v5 на exit-сервере |
+| `--tuic-password` | update-relay | Пароль аутентификации TUIC v5 |
 
 > **`--remove-3xui`:** до этого изменения `setup.sh exit` устанавливал панель 3X-UI и на exit-сервере — хотя реальный трафик exit всегда обслуживался отдельным systemd-сервисом `xray` со своим конфигом, панель этот конфиг не видела и никак не использовалась. Начиная с этой версии `setup.sh exit` больше не ставит панель на exit. Если у вас уже есть exit, настроенный старой версией, запустите `sudo ./scripts/setup.sh update-exit --remove-3xui`, чтобы убрать её (свежие exit-установки это не затрагивает — там панели и так нет).
 

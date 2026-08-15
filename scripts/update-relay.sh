@@ -1,6 +1,6 @@
 #!/bin/bash
 # Update relay server configuration from latest codebase
-# Run: ./setup.sh update-relay [--upgrade]
+# Run: ./setup.sh update-relay [--upgrade] [--hysteria-port N --hysteria-obfs PASS] [--tuic-port N --tuic-password PASS]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/lib/caddy.sh"
 main() {
     local upgrade=false skip_ssh=false
     local arg_hy_port="" arg_hy_port_end="" arg_hy_obfs=""
+    local arg_tuic_port="" arg_tuic_password=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --upgrade) upgrade=true ;;
@@ -20,6 +21,8 @@ main() {
             --hysteria-port) arg_hy_port="$2"; shift ;;
             --hysteria-port-end) arg_hy_port_end="$2"; shift ;;
             --hysteria-obfs) arg_hy_obfs="$2"; shift ;;
+            --tuic-port) arg_tuic_port="$2"; shift ;;
+            --tuic-password) arg_tuic_password="$2"; shift ;;
         esac
         shift
     done
@@ -359,7 +362,20 @@ main() {
             hy_port_end=$((hy_port + 1000))
         fi
 
-        if [[ -n "$cdn_domain" && -n "$cdn_path" ]] || [[ -n "$hy_port" && -n "$hy_obfs" ]]; then
+        # Read TUIC params from existing service, then override with CLI args
+        # — same pattern as Hysteria above (issue: TUIC_LINK was silently
+        # dropped on every update-relay run because this block didn't know
+        # about it yet; fixed here). Read from dedicated TUIC_PORT/
+        # TUIC_PASSWORD env vars, not by parsing the constructed link back
+        # apart — same reasoning as HYSTERIA_PORT/HYSTERIA_OBFS existing
+        # as their own vars instead of being re-derived from HYSTERIA_LINK.
+        local tuic_port tuic_password
+        tuic_port=$(grep -oP '(?<=TUIC_PORT=).+' "$sub_proxy_service") || true
+        tuic_password=$(grep -oP '(?<=TUIC_PASSWORD=).+' "$sub_proxy_service") || true
+        [[ -n "$arg_tuic_port" ]] && tuic_port="$arg_tuic_port"
+        [[ -n "$arg_tuic_password" ]] && tuic_password="$arg_tuic_password"
+
+        if [[ -n "$cdn_domain" && -n "$cdn_path" ]] || [[ -n "$hy_port" && -n "$hy_obfs" ]] || [[ -n "$tuic_port" && -n "$tuic_password" ]]; then
             # Read ExecStart from existing service file
             local exec_start
             exec_start=$(grep -oP '(?<=ExecStart=).+' "$sub_proxy_service") || true
@@ -406,6 +422,16 @@ main() {
                 log_info "Hysteria 2 link updated"
             fi
 
+            # TUIC v5 link — only when TUIC is configured. Rebuilt from the
+            # persisted TUIC_PORT/TUIC_PASSWORD every run (same reasoning as
+            # the Hysteria link above), so it stays correct if exit_uuid/
+            # exit_sni changed since TUIC was first set up.
+            local tuic_link=""
+            if [[ -n "$tuic_port" && -n "$tuic_password" ]]; then
+                tuic_link="tuic://${exit_uuid}:${tuic_password}@${exit_ip}:${tuic_port}?sni=${exit_sni}&alpn=h3&congestion_control=bbr&udp_relay_mode=native#TUIC%20v5"
+                log_info "TUIC v5 link updated"
+            fi
+
             # URL-encoded XHTTP extra — sub-proxy injects into each relay VLESS URL
             # since 3X-UI's built-in subscription generator does not emit extra=.
             local relay_extra_encoded
@@ -417,6 +443,7 @@ main() {
             local direct_escaped="${direct_vless_link//%/%%}"
             local hysteria_escaped="${hysteria_link//%/%%}"
             local relay_extra_escaped="${relay_extra_encoded//%/%%}"
+            local tuic_escaped="${tuic_link//%/%%}"
 
             # Read existing service params
             local sub_upstream sub_proxy_port
@@ -446,6 +473,9 @@ Environment=HYSTERIA_OBFS=${hy_obfs}
 Environment=CDN_DOMAIN=${cdn_domain}
 Environment=CDN_PATH=${cdn_path}
 Environment=RELAY_XHTTP_EXTRA=${relay_extra_escaped}
+Environment=TUIC_LINK=${tuic_escaped}
+Environment=TUIC_PORT=${tuic_port}
+Environment=TUIC_PASSWORD=${tuic_password}
 Environment=SUB_UPSTREAM=${sub_upstream}
 Environment=SUB_PROXY_PORT=${sub_proxy_port}
 ExecStart=${exec_start}
@@ -519,6 +549,9 @@ SVCEOF
     fi
     if [[ -n "$arg_hy_port" ]]; then
         echo "  Hysteria 2 link added to subscriptions"
+    fi
+    if [[ -n "$arg_tuic_port" ]]; then
+        echo "  TUIC v5 link added to subscriptions"
     fi
     echo ""
     echo "  Tell users to refresh the subscription URL in their VPN client —"

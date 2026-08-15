@@ -265,6 +265,8 @@ setup_sub_proxy() {
     local hysteria_obfs="${11:-}"
     local relay_extra_encoded="${12:-}"
     local tuic_link="${13:-}"
+    local tuic_port="${14:-}"
+    local tuic_password="${15:-}"
 
     log_info "Setting up subscription proxy..."
 
@@ -312,6 +314,8 @@ Environment=CDN_DOMAIN=${cdn_domain}
 Environment=CDN_PATH=${cdn_path}
 Environment=RELAY_XHTTP_EXTRA=${escaped_relay_extra}
 Environment=TUIC_LINK=${escaped_tuic}
+Environment=TUIC_PORT=${tuic_port}
+Environment=TUIC_PASSWORD=${tuic_password}
 Environment=SUB_PROXY_PORT=${proxy_port}
 ExecStart=/usr/bin/python3 /usr/local/bin/sub-proxy.py
 Restart=on-failure
