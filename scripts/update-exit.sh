@@ -1,6 +1,6 @@
 #!/bin/bash
 # Update exit server configuration from latest codebase
-# Run: ./setup.sh update-exit [--upgrade] [--enable-warp|--disable-warp]
+# Run: ./setup.sh update-exit [--upgrade] [--enable-warp|--disable-warp] [--remove-3xui]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/lib/security.sh"
 source "$SCRIPT_DIR/lib/xray.sh"
 source "$SCRIPT_DIR/lib/3xui.sh"
 source "$SCRIPT_DIR/lib/hysteria.sh"
+source "$SCRIPT_DIR/lib/tuic.sh"
 source "$SCRIPT_DIR/lib/warp.sh"
 source "$SCRIPT_DIR/lib/verify.sh"
 source "$SCRIPT_DIR/lib/caddy.sh"
@@ -16,13 +17,14 @@ XRAY_CONFIG="/usr/local/etc/xray/config.json"
 XUI_DB="/etc/x-ui/x-ui.db"
 
 main() {
-    local upgrade=false skip_ssh=false enable_warp=false disable_warp=false
+    local upgrade=false skip_ssh=false enable_warp=false disable_warp=false remove_3xui=false
     for arg in "$@"; do
         case "$arg" in
             --upgrade) upgrade=true ;;
             --skip-ssh) skip_ssh=true ;;
             --enable-warp) enable_warp=true ;;
             --disable-warp) disable_warp=true ;;
+            --remove-3xui) remove_3xui=true ;;
         esac
     done
 
@@ -142,10 +144,38 @@ main() {
     log_info "  DNS mode: $dns_mode"
     log_info "  WARP:     $warp_enabled"
 
-    # Read panel port from 3X-UI DB (for UFW and verification)
+    # Read panel port from 3X-UI DB (for UFW and verification) — only
+    # relevant for exit servers that still carry a pre-removal legacy
+    # install (fresh installs since the removal never have this file).
     local panel_port=""
     if [[ -f "$XUI_DB" ]]; then
         panel_port=$(sqlite3 "$XUI_DB" "SELECT value FROM settings WHERE key='webPort';" 2>/dev/null) || true
+    fi
+
+    # --- Step 2a: One-time legacy cleanup (--remove-3xui) ---
+    # 3X-UI on exit never controlled the actual xray process/config (exit's
+    # xray always ran as its own systemd service with a static config) —
+    # it was fully inert here. Servers set up before that was fixed still
+    # have it installed and running for no operational reason; this flag
+    # is the opt-in one-time removal for them. Fresh installs never had it,
+    # so this is a no-op there.
+    if [[ "$remove_3xui" == true ]]; then
+        if [[ -f "$XUI_DB" ]]; then
+            log_info "=== Removing legacy 3X-UI from exit (--remove-3xui) ==="
+            if command -v x-ui &>/dev/null; then
+                x-ui stop 2>/dev/null || true
+                echo "y" | x-ui uninstall 2>/dev/null || true
+            fi
+            rm -rf /etc/x-ui/ 2>/dev/null || true
+            log_ok "3X-UI removed from exit"
+            if [[ -n "$panel_port" ]]; then
+                log_info "Its UFW rule for port ${panel_port} was NOT auto-removed —"
+                log_info "revoke manually if desired: ufw delete allow ${panel_port}/tcp"
+            fi
+            panel_port=""
+        else
+            log_info "--remove-3xui: no 3X-UI install found on this exit, nothing to do"
+        fi
     fi
 
     # --- Step 2b: Heal Caddy socket perms (issue #42) ---
@@ -273,6 +303,27 @@ main() {
         fi
     fi
 
+    # --- Step 5c: Update TUIC v5 certs if installed ---
+    # Binary upgrade / port changes for TUIC are not wired into --upgrade
+    # yet (tracked as follow-up) — this block only keeps the cert current,
+    # which is the one thing that silently breaks TUIC on its own schedule
+    # (Caddy renews the SelfSteal cert roughly every 60 days; without this,
+    # tuic-server keeps serving the old one until it expires).
+    local is_tuic=false
+    if [[ -f /etc/tuic/config.json ]]; then
+        is_tuic=true
+        log_info "TUIC v5 detected"
+        if [[ "$is_selfsteal" == true ]]; then
+            update_tuic_certs "$server_name"
+            systemctl restart tuic-server
+            if systemctl is-active --quiet tuic-server; then
+                log_ok "TUIC v5 restarted"
+            else
+                log_warn "TUIC v5 failed to restart. Check: journalctl -u tuic-server"
+            fi
+        fi
+    fi
+
     # --- Step 6: Security ---
     log_info "=== Security ==="
     local ssh_port
@@ -296,6 +347,13 @@ main() {
         hy_port_end=$(grep '^listen:' "$HYSTERIA_CONFIG" | grep -oP '(?<=-)\d+$') || true
         if [[ -n "$hy_port" && -n "$hy_port_end" ]]; then
             ufw allow "${hy_port}:${hy_port_end}/udp" comment "Hysteria2" > /dev/null 2>&1 || true
+        fi
+    fi
+    if [[ "$is_tuic" == true ]]; then
+        local tuic_port
+        tuic_port=$(jq -r '.server' /etc/tuic/config.json 2>/dev/null | cut -d: -f2) || true
+        if [[ -n "$tuic_port" ]]; then
+            ufw allow "${tuic_port}/udp" comment "TUIC" > /dev/null 2>&1 || true
         fi
     fi
 

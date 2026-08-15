@@ -7,9 +7,10 @@ source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/security.sh"
 source "$SCRIPT_DIR/lib/reality.sh"
 source "$SCRIPT_DIR/lib/xray.sh"
-source "$SCRIPT_DIR/lib/3xui.sh"
 source "$SCRIPT_DIR/lib/caddy.sh"
 source "$SCRIPT_DIR/lib/hysteria.sh"
+source "$SCRIPT_DIR/lib/tuic.sh"
+source "$SCRIPT_DIR/lib/amneziawg.sh"
 source "$SCRIPT_DIR/lib/warp.sh"
 source "$SCRIPT_DIR/lib/verify.sh"
 
@@ -45,16 +46,12 @@ main() {
     # --- Step 1: Gather configuration ---
     log_info "=== Configuration ==="
 
-    local panel_port panel_path admin_user admin_pass
-    panel_port=$(generate_random_port)
-    panel_path=$(generate_random_path)
-    log_info "Panel port: $panel_port (random)"
-    log_info "Panel path: $panel_path (random)"
-
-    admin_user="${ADMIN_USER:-admin}"
-    admin_pass="${ADMIN_PASS:-$(generate_admin_pass)}"
-    log_info "Admin user: $admin_user (auto, override via ADMIN_USER env)"
-    log_info "Admin pass: auto-generated, shown in the final summary (override via ADMIN_PASS env)"
+    # NOTE: exit no longer installs its own 3X-UI panel (removed — see git log).
+    # Exit's XRAY runs as a plain systemd service with a static config written
+    # by configure_xray_exit(); a panel here never controlled that config or
+    # that process, so it was a fully inert attack surface (open port + SQLite
+    # DB with admin creds, zero operational purpose). Panel management lives
+    # on the relay only.
 
     local ssh_port=22
     prompt_input "Custom SSH port (Enter for default 22)" ssh_port "22"
@@ -111,6 +108,44 @@ main() {
         fi
     fi
 
+    # TUIC v5 — separate QUIC transport, complementary to Hysteria2 (see
+    # lib/tuic.sh for why it's worth running both rather than picking one).
+    # Same cert dependency as Hysteria2, so same SelfSteal requirement.
+    local tuic_port=""
+    if [[ -n "$selfsteal_domain" ]]; then
+        prompt_input "TUIC v5 UDP port (Enter to skip)" tuic_port ""
+        if [[ -n "$tuic_port" ]]; then
+            if ! [[ "$tuic_port" =~ ^[0-9]+$ ]] || [[ "$tuic_port" -lt 1024 || "$tuic_port" -gt 65535 ]]; then
+                log_error "Invalid port: $tuic_port (must be 1024-65535)"
+                exit 1
+            fi
+            if [[ "$tuic_port" == "$hysteria_port" ]]; then
+                log_error "TUIC port must differ from Hysteria 2 port"
+                exit 1
+            fi
+            log_info "TUIC v5: UDP ${tuic_port}"
+        fi
+    fi
+
+    # AmneziaWG — obfuscated WireGuard. Deliberately NOT gated behind
+    # selfsteal_domain: it's not TLS-based, doesn't touch Caddy or certs,
+    # and the DKMS kernel module install can legitimately fail on VPS
+    # providers shipping a non-stock/hardened kernel — keep it fully
+    # independent so a failure here can't take out the SelfSteal path.
+    local amneziawg_port=""
+    prompt_input "AmneziaWG UDP port (Enter to skip)" amneziawg_port ""
+    if [[ -n "$amneziawg_port" ]]; then
+        if ! [[ "$amneziawg_port" =~ ^[0-9]+$ ]] || [[ "$amneziawg_port" -lt 1024 || "$amneziawg_port" -gt 65535 ]]; then
+            log_error "Invalid port: $amneziawg_port (must be 1024-65535)"
+            exit 1
+        fi
+        if [[ "$amneziawg_port" == "$hysteria_port" || "$amneziawg_port" == "$tuic_port" ]]; then
+            log_error "AmneziaWG port must differ from Hysteria 2 / TUIC ports"
+            exit 1
+        fi
+        log_info "AmneziaWG: UDP ${amneziawg_port}"
+    fi
+
     # --- Step 2: System setup ---
     log_info "=== System Setup ==="
     update_system
@@ -138,7 +173,7 @@ main() {
     local cdn_path="" cdn_port=""
     if [[ -n "$cdn_domain" ]]; then
         cdn_path=$(generate_random_path)
-        cdn_port=$(generate_random_port "$panel_port")
+        cdn_port=$(generate_random_port)
         log_ok "Generated CDN path and port"
     fi
 
@@ -153,10 +188,16 @@ main() {
         export REALITY_SERVER_NAME="$selfsteal_domain"
         generate_caddyfile "$selfsteal_domain" "" "" "" "" \
             "$cdn_domain" "$cdn_path" "$cdn_port"
-        # Caddy is NOT started yet — port 80 must stay free for 3X-UI installer
-        # (its ACME HTTP-01 challenge needs port 80).
-        # systemd dependency is also deferred: Wants=caddy.service would auto-start
-        # Caddy when XRAY restarts, defeating the purpose of delaying.
+        # Caddy can start right away and own :80 for its own ACME HTTP-01
+        # challenge — nothing else on exit needs :80 anymore now that there's
+        # no 3X-UI installer competing for it. (disable_acme_cron() is also
+        # gone from this path on purpose: that call existed only to silence
+        # the acme.sh cron 3X-UI's OWN installer used to leave behind on
+        # exit — with 3X-UI removed from exit, acme.sh is never installed
+        # here in the first place, so there's nothing to disable. Caddy's
+        # built-in ACME client handles renewal on its own.)
+        start_caddy
+        setup_caddy_systemd_dependency "xray"
 
         configure_xray_exit 443 "$exit_uuid" "$REALITY_PRIVATE_KEY" \
             "$REALITY_SHORT_ID" "$REALITY_DEST" "$REALITY_SERVER_NAME" \
@@ -172,18 +213,6 @@ main() {
 
     restart_xray
 
-    # --- Step 4: Install 3X-UI ---
-    log_info "=== 3X-UI Setup ==="
-    install_3xui
-    configure_3xui "$panel_port" "$panel_path" "$admin_user" "$admin_pass"
-
-    # Start Caddy AFTER 3X-UI is installed, then add systemd dependency
-    if [[ -n "$selfsteal_domain" ]]; then
-        start_caddy
-        setup_caddy_systemd_dependency "xray"
-        disable_acme_cron
-    fi
-
     # --- Hysteria 2 (optional, requires SelfSteal) ---
     if [[ -n "$hysteria_port" ]]; then
         log_info "=== Hysteria 2 Setup ==="
@@ -193,11 +222,36 @@ main() {
         restart_hysteria
     fi
 
-    # --- Step 5: Security ---
+    # --- TUIC v5 (optional, requires SelfSteal) ---
+    if [[ -n "$tuic_port" ]]; then
+        log_info "=== TUIC v5 Setup ==="
+        install_tuic
+        configure_tuic "$tuic_port" "$selfsteal_domain" "$exit_uuid"
+        restart_tuic
+    fi
+
+    # --- AmneziaWG (optional, no SelfSteal/domain needed — no TLS involved) ---
+    if [[ -n "$amneziawg_port" ]]; then
+        log_info "=== AmneziaWG Setup ==="
+        # DKMS kernel-module build can legitimately fail on a VPS provider's
+        # custom/hardened kernel (no matching linux-headers package). That
+        # must not take down the rest of a working install — degrade to
+        # "skipped" instead of a fatal exit.
+        if install_amneziawg; then
+            configure_amneziawg "$amneziawg_port"
+            restart_amneziawg
+        else
+            log_warn "AmneziaWG install failed — skipping (see log above for the cause)"
+            log_warn "Common cause: no linux-headers package for this kernel (DKMS needs matching headers)"
+            amneziawg_port=""
+        fi
+    fi
+
+    # --- Step 4: Security ---
     log_info "=== Security Setup ==="
     local security_args=()
     [[ "$skip_ssh" == true ]] && security_args+=("--skip-ssh")
-    security_args+=(--ssh-port "$ssh_port" "$ssh_port":SSH 443:XRAY "$panel_port:3X-UI Panel")
+    security_args+=(--ssh-port "$ssh_port" "$ssh_port":SSH 443:XRAY)
     if [[ -n "$selfsteal_domain" ]]; then
         security_args+=(80:Caddy-ACME)
     fi
@@ -206,8 +260,16 @@ main() {
         ufw allow "${hysteria_port}:${hysteria_port_end}/udp" comment "Hysteria2" > /dev/null 2>&1 || true
         log_ok "UFW: UDP ${hysteria_port}:${hysteria_port_end} opened for Hysteria 2"
     fi
+    if [[ -n "$tuic_port" ]]; then
+        ufw allow "${tuic_port}/udp" comment "TUIC" > /dev/null 2>&1 || true
+        log_ok "UFW: UDP ${tuic_port} opened for TUIC v5"
+    fi
+    if [[ -n "$amneziawg_port" ]]; then
+        ufw allow "${amneziawg_port}/udp" comment "AmneziaWG" > /dev/null 2>&1 || true
+        log_ok "UFW: UDP ${amneziawg_port} opened for AmneziaWG"
+    fi
 
-    # --- Step 6: Verify ---
+    # --- Step 5: Verify ---
     # selfcheck может вернуть 1 при FAIL — не abort'им установку, "Done" банер должен напечататься
     "$SCRIPT_DIR/selfcheck.sh" || true
 
@@ -245,6 +307,20 @@ HYSTERIA_OBFS=$hysteria_obfs
 EOF
     fi
 
+    if [[ -n "$tuic_port" ]]; then
+        cat >> /root/exit-server-info.txt << EOF
+TUIC_PORT=$tuic_port
+TUIC_PASSWORD=$TUIC_PASSWORD
+EOF
+    fi
+
+    if [[ -n "$amneziawg_port" ]]; then
+        cat >> /root/exit-server-info.txt << EOF
+AMNEZIAWG_PORT=$amneziawg_port
+AMNEZIAWG_CLIENT_CONF=/root/amneziawg-clients/default.conf
+EOF
+    fi
+
     echo ""
     echo "==========================================="
     log_ok "EXIT server setup complete!"
@@ -263,10 +339,12 @@ EOF
     if [[ -n "$hysteria_port" ]]; then
         echo "  Hysteria2: UDP ${hysteria_port}-${hysteria_port_end} (Salamander)"
     fi
-    echo ""
-    echo "  Panel:     http://${server_ip}:${panel_port}/${panel_path}/"
-    echo "  User:      ${admin_user}"
-    echo "  Password:  ${admin_pass}"
+    if [[ -n "$tuic_port" ]]; then
+        echo "  TUIC v5:   UDP ${tuic_port}"
+    fi
+    if [[ -n "$amneziawg_port" ]]; then
+        echo "  AmneziaWG: UDP ${amneziawg_port} (client config: /root/amneziawg-clients/default.conf)"
+    fi
     echo ""
     if [[ "$ssh_port" != "22" ]]; then
         echo "  SSH port:  ${ssh_port}"
@@ -295,6 +373,16 @@ EOF
         echo "  Exit Hysteria port:   $hysteria_port"
         echo "  Exit Hysteria range:  $hysteria_port-$hysteria_port_end"
         echo "  Exit Hysteria obfs:   $hysteria_obfs"
+    fi
+    if [[ -n "$tuic_port" ]]; then
+        echo "  Exit TUIC port:       $tuic_port"
+        echo "  Exit TUIC password:   $TUIC_PASSWORD"
+    fi
+    if [[ -n "$amneziawg_port" ]]; then
+        echo "  AmneziaWG:            not part of the VLESS subscription — see"
+        echo "                        /root/amneziawg-clients/default.conf on THIS"
+        echo "                        (exit) server. Deliver that file to the user"
+        echo "                        directly (it is not a relay/3X-UI concept)."
     fi
     echo "-------------------------------------------"
     echo ""
