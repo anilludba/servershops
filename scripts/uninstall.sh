@@ -1,17 +1,20 @@
 #!/bin/bash
 # Uninstall all VPN components from the server
 # Preserves SSH keys and sshd_config
-# Run: ./setup.sh uninstall [--force] [--purge-certs] [--purge-warp]
+# Run: ./setup.sh uninstall [--force] [--purge-certs] [--purge-warp] [--purge-amneziawg]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/caddy.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/hysteria.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/tuic.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/amneziawg.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/warp.sh" 2>/dev/null || true
 
 FORCE=false
 PURGE_CERTS=false
 PURGE_WARP=false
+PURGE_AMNEZIAWG=false
 
 parse_args() {
     for arg in "$@"; do
@@ -19,6 +22,7 @@ parse_args() {
             --force) FORCE=true ;;
             --purge-certs) PURGE_CERTS=true ;;
             --purge-warp) PURGE_WARP=true ;;
+            --purge-amneziawg) PURGE_AMNEZIAWG=true ;;
         esac
     done
 }
@@ -30,7 +34,7 @@ confirm_uninstall() {
 
     echo ""
     log_warn "This will remove ALL VPN components from this server:"
-    echo "  - 3X-UI panel and database"
+    echo "  - 3X-UI panel and database (relay only — removed unconditionally on exit if found, see git log)"
     echo "  - XRAY core"
     echo "  - fail2ban"
     echo "  - UFW firewall rules"
@@ -38,6 +42,8 @@ confirm_uninstall() {
     echo "  - Cloudflare WARP (only with --purge-warp)"
     echo "  - sqlite3, socat"
     echo "  - Hysteria 2 server (if installed)"
+    echo "  - TUIC v5 server (if installed)"
+    echo "  - AmneziaWG interface + client configs (kernel module/package only with --purge-amneziawg)"
     echo "  - Caddy web server (if installed)"
     echo ""
     echo "  SSH keys and sshd_config will NOT be touched."
@@ -175,6 +181,22 @@ main() {
             rm -rf /etc/hysteria 2>/dev/null || true
             userdel hysteria 2>/dev/null || true
             log_ok "Hysteria 2 removed"
+        fi
+    fi
+
+    # TUIC v5
+    if type uninstall_tuic &>/dev/null; then
+        if [[ -f /usr/local/bin/tuic-server ]] || [[ -f /etc/tuic/config.json ]]; then
+            uninstall_tuic
+        fi
+    fi
+
+    # AmneziaWG — package/kernel module preserved unless --purge-amneziawg
+    # (same "don't rip out a possibly-shared system component by default"
+    # reasoning as --purge-warp).
+    if type uninstall_amneziawg &>/dev/null; then
+        if [[ -f /etc/amnezia/amneziawg/awg0.conf ]] || command -v awg &>/dev/null; then
+            uninstall_amneziawg "$PURGE_AMNEZIAWG"
         fi
     fi
     # Caddy (SelfSteal)

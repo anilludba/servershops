@@ -23,8 +23,15 @@ run_selfcheck_exit() {
 
     log_info "=== Block 1 — local services ==="
     verify_service_running xray "XRAY"           || _fails=$((_fails + 1))
-    verify_service_running x-ui "3X-UI"          || _fails=$((_fails + 1))
     verify_port_listening 443 "XRAY"             || _fails=$((_fails + 1))
+
+    # 3X-UI on exit was removed (it never controlled the actual xray
+    # process/config here — see git log). Only check it on servers that
+    # still have a leftover install from before that change; a fresh exit
+    # never has this file, so this block simply doesn't run for it.
+    if [[ -f /etc/x-ui/x-ui.db ]]; then
+        verify_service_running x-ui "3X-UI (legacy, unused on exit)" || _fails=$((_fails + 1))
+    fi
 
     if [[ -d /etc/caddy ]]; then
         verify_service_running caddy "Caddy"     || _fails=$((_fails + 1))
@@ -33,6 +40,16 @@ run_selfcheck_exit() {
 
     if [[ -f /etc/hysteria/config.yaml ]]; then
         verify_service_running hysteria-server "Hysteria 2" || _fails=$((_fails + 1))
+    fi
+
+    if [[ -f /etc/tuic/config.json ]]; then
+        verify_service_running tuic-server "TUIC v5" || _fails=$((_fails + 1))
+        verify_port_listening "$(jq -r '.server' /etc/tuic/config.json 2>/dev/null | cut -d: -f2)" "TUIC v5" \
+            || _fails=$((_fails + 1))
+    fi
+
+    if [[ -f /etc/amnezia/amneziawg/awg0.conf ]]; then
+        verify_service_running "awg-quick@awg0" "AmneziaWG" || _fails=$((_fails + 1))
     fi
 
     if command -v warp-cli &>/dev/null && \
