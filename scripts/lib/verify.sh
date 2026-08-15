@@ -19,7 +19,7 @@ verify_service_running() {
 verify_port_listening() {
     local port="$1"
     local label="$2"
-    if ss -tlnp | grep -q ":${port} "; then
+    if ss -tlnp | grep -q ":${port} " || ss -ulnp | grep -q ":${port} "; then
         log_ok "$label is listening on port $port"
         return 0
     else
