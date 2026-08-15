@@ -236,6 +236,62 @@ update_system() {
     log_ok "System updated"
 }
 
+# Wait for Caddy's ACME-issued cert for $domain to land on disk (Caddy issues
+# it asynchronously after start, so a freshly-started Caddy may not have it
+# yet). Shared by any SelfSteal-adjacent service that needs its own copy of
+# the cert (Hysteria2, TUIC) — Caddy itself owns issuance/renewal, callers
+# only ever read a copy.
+wait_for_caddy_cert() {
+    local domain="$1"
+    local timeout="${2:-90}"
+    local cert_path
+    cert_path="$(caddy_cert_path "$domain")"
+
+    [[ -f "$cert_path" ]] && return 0
+
+    log_info "Waiting for Caddy ACME certificate for ${domain}..."
+    local elapsed=0
+    while [[ ! -f "$cert_path" ]]; do
+        if [[ $elapsed -ge $timeout ]]; then
+            log_error "Caddy cert not issued for ${domain} within ${timeout}s"
+            log_error "Expected: $cert_path"
+            log_error "ACME likely failed — check: journalctl -u caddy"
+            return 1
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    log_ok "Caddy cert ready (waited ${elapsed}s)"
+}
+
+caddy_cert_dir_for() {
+    echo "/root/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${1}"
+}
+
+caddy_cert_path() {
+    echo "$(caddy_cert_dir_for "$1")/${1}.crt"
+}
+
+# Copy Caddy's cert+key for $domain into $dest_dir/cert.crt + cert.key.
+# $dest_group (optional): chown the private key root:$dest_group 0640 for a
+# service that runs as a dedicated system user, instead of root-only 0600.
+copy_caddy_cert() {
+    local domain="$1" dest_dir="$2" dest_group="${3:-}"
+    local src_dir
+    src_dir="$(caddy_cert_dir_for "$domain")"
+
+    mkdir -p "$dest_dir"
+    cp "${src_dir}/${domain}.crt" "$dest_dir/cert.crt"
+    cp "${src_dir}/${domain}.key" "$dest_dir/cert.key"
+    chmod 644 "$dest_dir/cert.crt"
+    if [[ -n "$dest_group" ]]; then
+        chmod 640 "$dest_dir/cert.key"
+        chown "root:${dest_group}" "$dest_dir/cert.key"
+    else
+        chmod 600 "$dest_dir/cert.key"
+    fi
+}
+
 validate_domain() {
     local domain="$1"
     [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$ ]]

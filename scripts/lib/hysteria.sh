@@ -30,37 +30,11 @@ configure_hysteria() {
 
     log_info "Configuring Hysteria 2..."
 
-    # Copy Caddy's Let's Encrypt certs to Hysteria cert dir
-    # Hysteria runs as 'hysteria' user, Caddy certs are root-owned
-    local caddy_cert_dir="/root/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${selfsteal_domain}"
-    local cert_path="${caddy_cert_dir}/${selfsteal_domain}.crt"
-
-    # Caddy issues the cert asynchronously after start (ACME HTTP-01).
-    # On a freshly started Caddy the cert may not be on disk yet by the time
-    # we get here, so wait up to 90s before failing with a clear message.
-    if [[ ! -f "$cert_path" ]]; then
-        log_info "Waiting for Caddy ACME certificate for ${selfsteal_domain}..."
-        local elapsed=0
-        local timeout=90
-        while [[ ! -f "$cert_path" ]]; do
-            if [[ $elapsed -ge $timeout ]]; then
-                log_error "Caddy cert not issued for ${selfsteal_domain} within ${timeout}s"
-                log_error "Expected: $cert_path"
-                log_error "ACME likely failed — check: journalctl -u caddy"
-                exit 1
-            fi
-            sleep 1
-            elapsed=$((elapsed + 1))
-        done
-        log_ok "Caddy cert ready (waited ${elapsed}s)"
-    fi
-
-    mkdir -p "$HYSTERIA_CERT_DIR"
-    cp "${caddy_cert_dir}/${selfsteal_domain}.crt" "$HYSTERIA_CERT_DIR/cert.crt"
-    cp "${caddy_cert_dir}/${selfsteal_domain}.key" "$HYSTERIA_CERT_DIR/cert.key"
-    chmod 644 "$HYSTERIA_CERT_DIR/cert.crt"
-    chmod 640 "$HYSTERIA_CERT_DIR/cert.key"
-    chown root:hysteria "$HYSTERIA_CERT_DIR/cert.key"
+    # Hysteria runs as 'hysteria' user, Caddy certs are root-owned — copy a
+    # group-readable copy in. wait_for_caddy_cert/copy_caddy_cert live in
+    # common.sh (shared with tuic.sh, which needs the exact same dance).
+    wait_for_caddy_cert "$selfsteal_domain" || exit 1
+    copy_caddy_cert "$selfsteal_domain" "$HYSTERIA_CERT_DIR" hysteria
 
     mkdir -p /etc/hysteria
     cat > "$HYSTERIA_CONFIG" << HYEOF
@@ -105,19 +79,12 @@ restart_hysteria() {
 update_hysteria_certs() {
     local selfsteal_domain="$1"
 
-    local caddy_cert_dir="/root/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${selfsteal_domain}"
-    if [[ ! -f "${caddy_cert_dir}/${selfsteal_domain}.crt" ]]; then
+    if [[ ! -f "$(caddy_cert_path "$selfsteal_domain")" ]]; then
         log_warn "Caddy cert not found for ${selfsteal_domain}, skipping cert update"
         return 1
     fi
 
-    mkdir -p "$HYSTERIA_CERT_DIR"
-    cp "${caddy_cert_dir}/${selfsteal_domain}.crt" "$HYSTERIA_CERT_DIR/cert.crt"
-    cp "${caddy_cert_dir}/${selfsteal_domain}.key" "$HYSTERIA_CERT_DIR/cert.key"
-    chmod 644 "$HYSTERIA_CERT_DIR/cert.crt"
-    chmod 640 "$HYSTERIA_CERT_DIR/cert.key"
-    chown root:hysteria "$HYSTERIA_CERT_DIR/cert.key"
-
+    copy_caddy_cert "$selfsteal_domain" "$HYSTERIA_CERT_DIR" hysteria
     log_ok "Hysteria certs updated from Caddy"
 }
 
