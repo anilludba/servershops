@@ -41,7 +41,7 @@ check_site_tls13() {
 find_best_reality_dest() {
     log_info "Selecting best Reality dest site..."
 
-    local sites=("www.microsoft.com" "www.samsung.com" "dl.google.com" "www.asus.com" "www.logitech.com")
+    local sites=("www.microsoft.com" "www.samsung.com" "dl.google.com" "www.asus.com" "www.logitech.com" "vk.com")
     local best_site=""
     local best_time=999999
 
