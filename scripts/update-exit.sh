@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/lib/xray.sh"
 source "$SCRIPT_DIR/lib/3xui.sh"
 source "$SCRIPT_DIR/lib/hysteria.sh"
 source "$SCRIPT_DIR/lib/tuic.sh"
+source "$SCRIPT_DIR/lib/amneziawg.sh"
 source "$SCRIPT_DIR/lib/warp.sh"
 source "$SCRIPT_DIR/lib/verify.sh"
 source "$SCRIPT_DIR/lib/caddy.sh"
@@ -226,6 +227,40 @@ main() {
             apt-get update -qq && apt-get install -y -qq caddy > /dev/null 2>&1
             log_ok "Caddy upgraded"
         fi
+
+        if [[ -f /etc/tuic/config.json ]]; then
+            log_info "Reinstalling TUIC v5 (pinned release — re-verifies checksum, repairs a partial install)..."
+            # install_tuic() is pinned to a fixed tag (see lib/tuic.sh) — same
+            # reasoning as the 3X-UI pin above: a moving 'latest' target here
+            # would mean re-verifying against a checksum that also moved,
+            # which is a real difference from "curl|bash off a branch" only
+            # in that we'd still be checking SOMETHING, not nothing. Kept
+            # pinned for now rather than resolving GitHub's 'latest' release
+            # dynamically on every run of a script that may execute across
+            # many servers — avoids depending on unauthenticated GitHub API
+            # rate limits for something that isn't security-critical to
+            # chase immediately.
+            if install_tuic; then
+                log_ok "TUIC v5 reinstalled"
+            else
+                log_warn "TUIC v5 reinstall failed — previous binary/config untouched"
+            fi
+        fi
+
+        if [[ -f /etc/amnezia/amneziawg/awg0.conf ]] && command -v awg &>/dev/null; then
+            log_info "Upgrading AmneziaWG package..."
+            if apt-get update -qq && apt-get install -y -qq --only-upgrade amneziawg > /dev/null 2>&1; then
+                systemctl restart "awg-quick@awg0" 2>/dev/null || true
+                if systemctl is-active --quiet "awg-quick@awg0"; then
+                    log_ok "AmneziaWG upgraded and interface restarted"
+                else
+                    log_warn "AmneziaWG package upgraded but awg-quick@awg0 didn't come back — check: journalctl -u awg-quick@awg0"
+                fi
+                log_info "If the kernel module itself changed, a full reboot may still be needed for it to take effect"
+            else
+                log_warn "AmneziaWG upgrade check found nothing newer, or failed — see apt output above"
+            fi
+        fi
     fi
 
     # --- Step 5: Update XRAY config ---
@@ -413,7 +448,7 @@ EOF
     echo ""
     echo "  Config updated from latest codebase"
     if [[ "$upgrade" == true ]]; then
-        echo "  Binaries upgraded to latest versions"
+        echo "  Binaries upgraded (XRAY/Caddy to latest; 3X-UI/TUIC pinned versions re-verified; AmneziaWG via apt)"
     fi
     echo "  Security re-applied"
     if [[ "$warp_enabled" == "Y" ]]; then
