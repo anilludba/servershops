@@ -131,6 +131,8 @@ Split routing не требует дополнительной настройк�
 - **Многоуровневый CDN Fallback** — резервные маршруты через Cloudflare с асимметричным режимом
 - **Адаптивная защита соединений** — паддинг пакетов и мультиплексирование соединений
 - **Hysteria 2 (UDP)** — резервный канал с обфускацией Salamander и port hopping
+- **TUIC v5 (UDP, опционально)** — второй, независимый от Hysteria 2 QUIC-транспорт (другая реализация, другой отпечаток на проводе), требует SelfSteal
+- **AmneziaWG (UDP, опционально)** — обфусцированный WireGuard, единственный канал вообще без TLS-рукопожатия; не заходит в 3X-UI/подписку — раздаётся отдельным `.conf`-файлом с exit-сервера. SelfSteal не требуется (нет TLS — нет и зависимости от сертификата)
 - **Split Routing** — раздельная маршрутизация: российские сервисы напрямую, остальное через VPN. Готовые конфиги для Shadowrocket (`?conf=ru`)
 - **3X-UI панель** — веб-интерфейс для управления пользователями, лимитами трафика и мониторинга
 - **Подписки** — автоматическое обновление конфигурации на клиентских устройствах
@@ -197,22 +199,22 @@ sudo ./scripts/setup.sh exit
 Скрипт запросит настройки:
 
 ```
-3X-UI panel port [34821]:              ← Enter для случайного порта
-3X-UI panel secret path [a8Kx...]:     ← Enter для случайного пути
-Admin username [admin]:                ← имя администратора
-Admin password:                        ← пароль (не отображается)
 Custom SSH port (Enter for default 22): ← порт SSH
-Domain for SelfSteal SNI (Enter to skip): ← домен или Enter
+Domain for SelfSteal SNI (Enter to skip, required for CDN mode): ← домен или Enter
 ```
 
-При включении SelfSteal скрипт дополнительно установит Caddy, выпустит SSL-сертификат и предложит выбрать контент для сайта. Также спросит про CDN Fallback:
+> exit больше не устанавливает свою панель управления — она никогда не видела реальный конфиг exit'а (тот всегда жил в отдельном systemd-сервисе `xray`), так что была чистым лишним attack surface. Управление пользователями остаётся на relay (Шаг 2). Если у вас остался exit, настроенный старой версией, см. `--remove-3xui` в разделе «Флаги командной строки».
+
+При включении SelfSteal скрипт дополнительно установит Caddy, выпустит SSL-сертификат и предложит выбрать контент для сайта. Также спросит про CDN Fallback, Hysteria 2, TUIC v5 и AmneziaWG:
 
 ```
 CDN domain for Cloudflare (Enter to skip): ← домен для CDN или Enter
 Hysteria 2 UDP port (Enter to skip):      ← порт для Hysteria 2 или Enter
+TUIC v5 UDP port (Enter to skip):         ← порт для TUIC v5 или Enter
+AmneziaWG UDP port (Enter to skip):       ← порт для AmneziaWG или Enter
 ```
 
-Если указать CDN-домен, скрипт настроит CDN-маршрут через Caddy. В конце выведет инструкцию по настройке Cloudflare. Hysteria 2 устанавливается как отдельный процесс рядом с XRAY (UDP, port hopping + Salamander).
+Если указать CDN-домен, скрипт настроит CDN-маршрут через Caddy. В конце выведет инструкцию по настройке Cloudflare. Hysteria 2 и TUIC v5 устанавливаются как отдельные процессы рядом с XRAY (оба требуют SelfSteal — используют её сертификат). AmneziaWG SelfSteal не требует (нет TLS вообще) и спрашивается независимо от домена; его клиентский конфиг — отдельный файл на exit-сервере (`/root/amneziawg-clients/default.conf`), не часть подписки 3X-UI.
 
 В конце скрипт выведет параметры подключения — **сохраните их** для настройки relay:
 
@@ -414,11 +416,16 @@ x-ui log
 |------|-------------|----------|
 | `--force` | setup, uninstall | Пропустить guard-проверку / подтверждение |
 | `--skip-ssh` | setup, update | Не менять конфигурацию SSH |
-| `--upgrade` | update | Обновить бинарники (XRAY, 3X-UI, Caddy) |
+| `--upgrade` | update | Обновить бинарники (XRAY, 3X-UI на relay, Caddy) |
+| `--remove-3xui` | update-exit | Разовая очистка legacy-панели 3X-UI на exit (см. ниже) |
 | `--purge-certs` | uninstall | Удалить SSL-сертификаты и acme.sh |
+| `--purge-warp` | uninstall | Удалить пакет Cloudflare WARP и его APT-репозиторий |
+| `--purge-amneziawg` | uninstall | Удалить пакет/kernel-модуль AmneziaWG и его APT-репозиторий |
 | `--hysteria-port` | update-relay | Порт Hysteria 2 на exit-сервере |
 | `--hysteria-port-end` | update-relay | Конец диапазона портов (по умолчанию port + 1000) |
 | `--hysteria-obfs` | update-relay | Пароль обфускации Salamander |
+
+> **`--remove-3xui`:** до этого изменения `setup.sh exit` устанавливал панель 3X-UI и на exit-сервере — хотя реальный трафик exit всегда обслуживался отдельным systemd-сервисом `xray` со своим конфигом, панель этот конфиг не видела и никак не использовалась. Начиная с этой версии `setup.sh exit` больше не ставит панель на exit. Если у вас уже есть exit, настроенный старой версией, запустите `sudo ./scripts/setup.sh update-exit --remove-3xui`, чтобы убрать её (свежие exit-установки это не затрагивает — там панели и так нет).
 
 ## Безопасность
 
