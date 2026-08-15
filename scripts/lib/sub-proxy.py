@@ -30,6 +30,7 @@ CDN_LINK = os.environ.get("CDN_VLESS_LINK", "")
 CDN_LINK_ASYM = os.environ.get("CDN_VLESS_LINK_ASYM", "")
 DIRECT_LINK = os.environ.get("DIRECT_VLESS_LINK", "")
 HYSTERIA_LINK = os.environ.get("HYSTERIA_LINK", "")
+TUIC_LINK = os.environ.get("TUIC_LINK", "")
 # URL-encoded JSON with XHTTP extra params (xmux, padding, flow control).
 # 3X-UI's built-in subscription generator does NOT emit xhttpSettings.extra
 # into the VLESS URL — we inject it here for every relay-like URL so clients
@@ -313,6 +314,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             extra_links.append(CDN_LINK)
         if HYSTERIA_LINK:
             extra_links.append(HYSTERIA_LINK)
+        if TUIC_LINK:
+            extra_links.append(TUIC_LINK)
         if DIRECT_LINK:
             extra_links.append(DIRECT_LINK)
         if extra_links or RELAY_EXTRA:

@@ -78,6 +78,22 @@ main() {
         validate_not_empty "$hysteria_obfs" "Hysteria obfs password" || exit 1
     fi
 
+    local tuic_port="" tuic_password=""
+    prompt_input "Exit TUIC v5 port (Enter if not configured)" tuic_port ""
+    if [[ -n "$tuic_port" ]]; then
+        if ! [[ "$tuic_port" =~ ^[0-9]+$ ]] || [[ "$tuic_port" -lt 1024 || "$tuic_port" -gt 65535 ]]; then
+            log_error "Invalid TUIC port: $tuic_port (must be 1024-65535)"
+            exit 1
+        fi
+        prompt_input "Exit TUIC v5 password (from exit-server-info.txt TUIC_PASSWORD)" tuic_password
+        validate_not_empty "$tuic_password" "TUIC password" || exit 1
+    fi
+
+    # AmneziaWG is intentionally NOT prompted for here. It doesn't route
+    # through the relay or 3X-UI at all (see lib/amneziawg.sh) — its client
+    # .conf lives only on the exit server and is handed to users directly,
+    # so relay setup has nothing to configure for it.
+
     # Validate exit server inputs
     validate_ip "$exit_ip" || { log_error "Invalid IP address: $exit_ip"; exit 1; }
     validate_uuid "$exit_uuid" || { log_error "Invalid UUID format: $exit_uuid"; exit 1; }
@@ -211,7 +227,7 @@ main() {
         # appends extra links (CDN, Direct Exit, Hysteria) to every subscription response.
         # Must be set up BEFORE Caddyfile generation so Caddy gets the proxy port.
         local caddy_sub_port="$sub_port"
-        if [[ -n "$sub_port" ]] && [[ -n "$cdn_domain" || -n "$hysteria_port" ]]; then
+        if [[ -n "$sub_port" ]] && [[ -n "$cdn_domain" || -n "$hysteria_port" || -n "$tuic_port" ]]; then
             local cdn_vless_link="" cdn_vless_link_asym="" sub_proxy_port
 
             # CDN links — only when CDN Fallback is configured
@@ -259,6 +275,16 @@ main() {
                 hysteria_link="hysteria2://${exit_uuid}@${exit_ip}:${hysteria_port},${hysteria_port}-${hysteria_port_end}/?obfs=salamander&obfs-password=${hysteria_obfs}&sni=${exit_sni}&insecure=0#Hysteria%202"
             fi
 
+            # TUIC v5 link — only when TUIC is configured. Format verified
+            # against sing-box/v2rayN's tuic:// parsing (tuic://uuid:password@host:port?...).
+            # udp_relay_mode=native is upstream's recommended default; alpn=h3
+            # matches the server's alpn:["h3"] in lib/tuic.sh — must agree or
+            # the QUIC ALPN negotiation fails the handshake.
+            local tuic_link=""
+            if [[ -n "$tuic_port" ]]; then
+                tuic_link="tuic://${exit_uuid}:${tuic_password}@${exit_ip}:${tuic_port}?sni=${exit_sni}&alpn=h3&congestion_control=bbr&udp_relay_mode=native#TUIC%20v5"
+            fi
+
             # URL-encoded XHTTP extra — sub-proxy injects into each relay VLESS URL
             # since 3X-UI's built-in subscription generator does not emit extra=.
             local relay_extra_json relay_extra_encoded
@@ -266,7 +292,7 @@ main() {
             relay_extra_encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$relay_extra_json")
 
             sub_proxy_port=$((sub_port + 1))
-            setup_sub_proxy "$sub_port" "$cdn_vless_link" "$sub_proxy_port" "$cdn_domain" "$cdn_path" "$cdn_vless_link_asym" "$direct_vless_link" "$hysteria_link" "$hysteria_port" "$hysteria_port_end" "$hysteria_obfs" "$relay_extra_encoded"
+            setup_sub_proxy "$sub_port" "$cdn_vless_link" "$sub_proxy_port" "$cdn_domain" "$cdn_path" "$cdn_vless_link_asym" "$direct_vless_link" "$hysteria_link" "$hysteria_port" "$hysteria_port_end" "$hysteria_obfs" "$relay_extra_encoded" "$tuic_link"
             caddy_sub_port="$sub_proxy_port"
         fi
 

@@ -264,6 +264,7 @@ setup_sub_proxy() {
     local hysteria_port_end="${10:-}"
     local hysteria_obfs="${11:-}"
     local relay_extra_encoded="${12:-}"
+    local tuic_link="${13:-}"
 
     log_info "Setting up subscription proxy..."
 
@@ -289,6 +290,7 @@ setup_sub_proxy() {
     local escaped_direct="${direct_vless_link//%/%%}"
     local escaped_hysteria="${hysteria_link//%/%%}"
     local escaped_relay_extra="${relay_extra_encoded//%/%%}"
+    local escaped_tuic="${tuic_link//%/%%}"
 
     # Create systemd service
     cat > /etc/systemd/system/sub-proxy.service << SVCEOF
@@ -309,6 +311,7 @@ Environment=HYSTERIA_OBFS=${hysteria_obfs}
 Environment=CDN_DOMAIN=${cdn_domain}
 Environment=CDN_PATH=${cdn_path}
 Environment=RELAY_XHTTP_EXTRA=${escaped_relay_extra}
+Environment=TUIC_LINK=${escaped_tuic}
 Environment=SUB_PROXY_PORT=${proxy_port}
 ExecStart=/usr/bin/python3 /usr/local/bin/sub-proxy.py
 Restart=on-failure
