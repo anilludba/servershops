@@ -159,9 +159,9 @@ main() {
             printf '\n'   # Bind to 127.0.0.1? → N (all interfaces)
             printf '\n%.0s' {1..98}  # any further/unexpected prompts: accept defaults
         } > /tmp/xui-answers
-        bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/v3.1.0/install.sh) v3.1.0 < /tmp/xui-answers
+        bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/v3.3.1/install.sh) v3.3.1 < /tmp/xui-answers
         rm -f /tmp/xui-answers
-        log_ok "3X-UI upgraded to v3.1.0 (seeder migrated existing clients)"
+        log_ok "3X-UI upgraded to v3.3.1 (seeder migrated existing clients)"
 
         if [[ "$is_selfsteal" == true ]]; then
             log_info "Upgrading Caddy..."
