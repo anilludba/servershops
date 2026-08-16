@@ -206,20 +206,20 @@ main() {
 
         if command -v x-ui &> /dev/null; then
             log_info "Upgrading 3X-UI..."
-            # Pinned to v3.1.0 — see scripts/lib/3xui.sh:install_3xui. Exit panel is
-            # decorative (real exit xray is standalone) — no API migration needed.
-            # On an already-configured panel install.sh skips the DB/port prompts; the
-            # only question is SSL (then a bind-to-127.0.0.1 y/N when SSL=4). The SSL
-            # answer (4 = Skip) must be FIRST — a leading blank would default SSL to
-            # option 2 (LE IP cert, acme on :80, collides with Caddy).
-            {
-                printf '4\n'  # SSL method         → Skip SSL
-                printf '\n'   # Bind to 127.0.0.1? → N (all interfaces)
-                printf '\n%.0s' {1..98}  # any further/unexpected prompts: accept defaults
-            } > /tmp/xui-answers
-            bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/v3.3.1/install.sh) v3.3.1 < /tmp/xui-answers
-            rm -f /tmp/xui-answers
-            log_ok "3X-UI upgraded to v3.3.1"
+            # Pinned to v3.6.0 (bumped from v3.3.1) — see scripts/lib/3xui.sh for
+            # the full rationale. Exit panel is decorative (real exit xray is
+            # standalone) — no API migration needed here even though this bump
+            # is not itself security-motivated.
+            #
+            # NONINTERACTIVE=1 (explicit) + XUI_SSL_MODE=none: v3.6.0's install.sh
+            # replaces every prompt with an env-var-or-default lookup once stdin
+            # isn't a TTY (which our `< /dev/null` guarantees) — verified by
+            # tracing the installer source that these two vars reproduce "Skip
+            # SSL, don't bind 127.0.0.1" exactly, without relying on printf'd
+            # answers to prompts that mode no longer actually reads.
+            XUI_NONINTERACTIVE=1 XUI_SSL_MODE=none \
+                bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/v3.6.0/install.sh) v3.6.0 < /dev/null
+            log_ok "3X-UI upgraded to v3.6.0"
         fi
 
         if [[ "$is_selfsteal" == true ]]; then

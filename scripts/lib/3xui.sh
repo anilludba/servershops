@@ -24,26 +24,33 @@ install_3xui() {
     # Open port 80 temporarily — the installer uses it for Let's Encrypt SSL cert
     ufw allow 80/tcp comment "ACME temp" > /dev/null 2>&1 || true
 
-    # Pin 3X-UI to v3.1.0 and pull install.sh from the SAME tag (not master) so the
-    # interactive prompt set is stable. Verified against the v3.1.0 installer source
-    # (config_after_install / prompt_and_setup_ssl), the fresh-install prompt order is:
-    #   1. Database type        [Choose [1]:]        blank → 1 = SQLite
-    #   2. Customize panel port? [y/n]               blank → random port
-    #   3. SSL method            [Choose (default 2)] → 4 = Skip SSL
-    #      (blank here defaults to 2 = Let's Encrypt IP cert, which runs acme.sh on
-    #       :80 and collides with Caddy — must explicitly pick 4)
-    #   4. Bind panel to 127.0.0.1 only? [y/N]       blank → N (keep all-interfaces)
-    # The SSL prompt is the 3rd read, not the 2nd — feeding 4 too early lands it on the
-    # panel-port question and leaves SSL at its IP-cert default. Order matters.
-    {
-        printf '\n'   # 1. DB type            → SQLite (default 1)
-        printf '\n'   # 2. Customize port?    → no (random port)
-        printf '4\n'  # 3. SSL method         → Skip SSL
-        printf '\n'   # 4. Bind to 127.0.0.1? → N (all interfaces)
-        printf '\n%.0s' {1..96}  # any further/unexpected prompts: accept defaults
-    } > /tmp/xui-answers
-    bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/v3.3.1/install.sh) v3.3.1 < /tmp/xui-answers
-    rm -f /tmp/xui-answers
+    # Pinned to v3.6.0 (bumped from v3.3.1). v3.3.1 already closed
+    # GHSA-jm48-m3rr-9hgg; this bump is not itself security-motivated — see
+    # scripts/update-relay.sh for why it was worth doing now regardless
+    # (verified compatible, not chased for its own sake).
+    #
+    # v3.6.0's install.sh added a NONINTERACTIVE mode (auto-triggered by
+    # `[[ ! -t 0 ]]` — i.e. ANY non-TTY stdin, which is exactly what our own
+    # redirect below produces) that replaces every `read -rp` prompt with an
+    # env-var-or-default lookup. This makes the old printf-a-sequence-of-
+    # blank-lines approach a fragile fiction under v3.6.0+: verified by
+    # tracing the actual installer source that none of our printf'd answers
+    # are read anymore — NONINTERACTIVE mode's own defaults (sqlite db,
+    # random port, XUI_SSL_MODE unset → Skip SSL, bind_local=n) happen to
+    # match what we want, but relying on that match staying coincidentally
+    # correct forever is not something to build on. Set the env vars
+    # explicitly instead — this is the documented, first-class automation
+    # path upstream now ships (their own comment names cloud-init as the
+    # intended use case), not a workaround.
+    #
+    # `< /dev/null` is still required, not cosmetic: it's what makes stdin
+    # a non-TTY so NONINTERACTIVE=1 triggers at all — this whole script
+    # normally runs inside an interactive `setup.sh exit/relay` session, so
+    # without an explicit redirect here this child process would inherit a
+    # real TTY and install.sh would fall back to full interactive prompting
+    # (and hang waiting for input nobody knows to give).
+    XUI_NONINTERACTIVE=1 XUI_SSL_MODE=none \
+        bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/v3.6.0/install.sh) v3.6.0 < /dev/null
 
     # Close temporary port 80 — unless Caddy needs it permanently (SelfSteal mode)
     if [[ "$skip_acme_port" != true ]]; then

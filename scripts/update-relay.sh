@@ -145,23 +145,45 @@ main() {
     # --- Step 4: Upgrade 3X-UI (optional) ---
     if [[ "$upgrade" == true ]]; then
         log_info "=== Upgrading 3X-UI ==="
-        # Pinned to v3.1.0 — see scripts/lib/3xui.sh:install_3xui. First start of
-        # v3.1.0 runs the seeder, migrating existing JSON clients into the normalized
-        # clients/client_inbounds tables (subscriptions survive upgrade).
-        # On an already-configured panel install.sh skips the DB/port prompts; the
-        # only question is SSL (and, when SSL=4 is picked, a bind-to-127.0.0.1 y/N).
-        # So the SSL answer (4 = Skip) must be FIRST here — unlike the fresh-install
-        # feed in install_3xui, which has DB+port prompts ahead of it. A leading blank
-        # would land on the SSL prompt and default it to option 2 (LE IP cert, acme on
-        # :80, collides with Caddy).
-        {
-            printf '4\n'  # SSL method         → Skip SSL
-            printf '\n'   # Bind to 127.0.0.1? → N (all interfaces)
-            printf '\n%.0s' {1..98}  # any further/unexpected prompts: accept defaults
-        } > /tmp/xui-answers
-        bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/v3.3.1/install.sh) v3.3.1 < /tmp/xui-answers
-        rm -f /tmp/xui-answers
-        log_ok "3X-UI upgraded to v3.3.1 (seeder migrated existing clients)"
+        # Pinned to v3.6.0 (bumped from v3.3.1) — see scripts/lib/3xui.sh for the
+        # full rationale (NONINTERACTIVE mode discovery, verified API-surface
+        # compatibility) and scripts/update-relay.sh's v3.3.1 bump commit for the
+        # GHSA-jm48-m3rr-9hgg security history. `x-ui migrate` (schema/seed
+        # migrations, including the api_tokens hashing pass) runs unconditionally
+        # on every install/upgrade and is idempotent — confirmed unchanged in
+        # v3.6.0's source, so bumping past an already-migrated DB is a no-op.
+        #
+        # NONINTERACTIVE=1 (explicit, not just inferred from the stdin redirect —
+        # see install_3xui() for why both matter) + XUI_SSL_MODE=none reproduces
+        # the same "skip SSL, don't bind 127.0.0.1" outcome the old printf feed
+        # was aiming for, via the officially-supported env-var path instead of
+        # answers to prompts that v3.6.0 no longer actually asks in this mode.
+        XUI_NONINTERACTIVE=1 XUI_SSL_MODE=none \
+            bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/v3.6.0/install.sh) v3.6.0 < /dev/null
+        log_ok "3X-UI upgraded to v3.6.0 (seeder migrated existing clients)"
+
+        # Re-verify/repair the API token after every upgrade — not just on
+        # first install. This is the fix for the exact incident this project
+        # hit going from v3.1.0 to v3.3.1: bootstrap_api_token() used to write
+        # the token in plaintext, which v3.3.1+ rejects (it hashes at rest and
+        # compares hashes — see xui-api.sh). A binary upgrade alone doesn't
+        # re-run bootstrap, so a relay upgrading straight through would have
+        # hit the same silent API breakage this one did, with no automatic
+        # recovery. Calling it here means a stale/mismatched token self-heals
+        # on the next --upgrade instead of requiring the manual SQL fix this
+        # project needed the first time.
+        if command -v x-ui &> /dev/null; then
+            systemctl stop x-ui > /dev/null 2>&1 || true
+            bootstrap_api_token
+            systemctl start x-ui > /dev/null 2>&1 || true
+            sleep 2
+            if xui_api_request GET "inbounds/list" >/dev/null 2>&1; then
+                log_ok "3X-UI API token verified working post-upgrade"
+            else
+                log_warn "3X-UI API token still not accepted after re-bootstrap — see: sqlite3 $XUI_DB \"SELECT * FROM api_tokens;\""
+            fi
+        fi
+
 
         if [[ "$is_selfsteal" == true ]]; then
             log_info "Upgrading Caddy..."
