@@ -221,6 +221,14 @@ SYSCTL
 # (one saved round trip) isn't worth adding a fingerprintable inconsistency
 # to a project this deliberate about not having one.
 tune_network_buffers() {
+    # Load conntrack now if it isn't already — UFW/iptables normally pull it
+    # in when the firewall rules apply, but tune_network_buffers() runs
+    # earlier in main() than setup_security(), so without this the
+    # nf_conntrack_max line below would silently no-op (sysctl --system
+    # skips a key whose /proc/sys path doesn't exist yet — soft-fails, does
+    # not abort the rest of the file, but the setting just wouldn't apply).
+    modprobe nf_conntrack 2>/dev/null || true
+
     cat > /etc/sysctl.d/99-vpn-network.conf <<'SYSCTL'
 # Socket buffers — stock Linux maxes are sized for general-purpose use, too
 # small to let BBR reach its throughput ceiling on a typical VPS's real
@@ -241,6 +249,35 @@ net.ipv4.tcp_max_syn_backlog=4096
 # (common on VPS providers layering overlay networking under the NIC).
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_mtu_probing=1
+
+# Connection tracking — UFW/iptables track every connection through
+# netfilter by default. The kernel's own auto-scaled default is sized off
+# total RAM and can land low on a 1-2GB VPS; a relay proxying many
+# concurrent client<->exit connections (each client connection costs at
+# least 2: client-to-relay, relay-to-exit) can realistically exhaust a
+# small table under real load, which silently drops new connections with
+# no application-level error to point at. Fixed at a size that isn't
+# trying to be clever, just clearly enough headroom for this workload.
+net.netfilter.nf_conntrack_max=131072
+
+# TIME_WAIT churn — this box makes many short-lived outbound connections of
+# its own (relay-to-exit, health checks, ACME renewals) alongside the
+# long-lived proxied ones. Reusing TIME_WAIT sockets for new outbound
+# connections (tw_reuse; safe for outbound-initiated connections, unlike
+# the old tw_recycle which broke NAT and is gone from the kernel) and
+# shortening how long a closed connection lingers in TIME_WAIT free up
+# ephemeral ports faster instead of them sitting idle for the 60s default.
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_fin_timeout=30
+
+# Keepalive — stock 2-hour default is far longer than most NATs/firewalls
+# (including on the client side, and Cloudflare's own edge for the CDN
+# channel) will hold an idle mapping open. Left at the default, a
+# connection can go silently dead on the peer's side long before this box
+# notices and frees it. Detect much sooner instead.
+net.ipv4.tcp_keepalive_time=300
+net.ipv4.tcp_keepalive_intvl=30
+net.ipv4.tcp_keepalive_probes=4
 SYSCTL
 
     sysctl --system >/dev/null || true
