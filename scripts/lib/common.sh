@@ -206,6 +206,104 @@ SYSCTL
     fi
 }
 
+# Socket buffer / accept-queue tuning for a relay that holds many concurrent
+# long-lived encrypted connections (Reality/XHTTP/Hysteria2/TUIC), separate
+# from enable_bbr() since it has no single "already applied" signal as clean
+# as tcp_congestion_control==bbr — sysctl --system is idempotent to re-run
+# regardless, so this just always (re)writes its own file.
+#
+# Deliberately does NOT set net.ipv4.tcp_fastopen: TFO changes the SYN's own
+# structure (a distinct option + optional data), and this project's whole
+# point is that the TLS/TCP handshake looks like the masquerade site's real
+# traffic (see lib/reality.sh) — if the camouflage site doesn't advertise
+# TFO and this server suddenly does, that is a small but real point of
+# difference an active prober could someday check for. The throughput gain
+# (one saved round trip) isn't worth adding a fingerprintable inconsistency
+# to a project this deliberate about not having one.
+tune_network_buffers() {
+    cat > /etc/sysctl.d/99-vpn-network.conf <<'SYSCTL'
+# Socket buffers — stock Linux maxes are sized for general-purpose use, too
+# small to let BBR reach its throughput ceiling on a typical VPS's real
+# bandwidth-delay product.
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+
+# Accept/SYN queues — many concurrent client connections landing on :443.
+net.core.somaxconn=4096
+net.core.netdev_max_backlog=4096
+net.ipv4.tcp_max_syn_backlog=4096
+
+# VPN/proxy traffic is bursty (idle between requests, then a burst) — don't
+# reset cwnd back to slow-start after an idle gap, and keep probing PMTU
+# rather than risk a silent blackhole on a path with a stale/wrong MTU
+# (common on VPS providers layering overlay networking under the NIC).
+net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_mtu_probing=1
+SYSCTL
+
+    sysctl --system >/dev/null || true
+    log_ok "Network buffer/queue tuning applied"
+}
+
+# Swap as an OOM safety net, not a working-set extension — this project
+# regularly runs on 1-2GB VPS instances (selfcheck has repeatedly shown
+# ~600MB available on a live relay under normal load) with zero swap
+# configured anywhere. Sized off actual RAM rather than a fixed value so it
+# scales sanely across the small-VPS range this project targets; skips
+# entirely above 2GB since that's past where this project needs to guess for
+# the operator.
+#
+# swappiness=10 (not the 60 default): a relay's whole memory footprint is
+# live proxy connection state. We want the kernel treating swap as a last
+# resort against OOM-killing xray/3x-ui, not proactively paging out warm
+# pages under mild pressure — the latter shows up as real added latency on
+# whichever connection got paged out.
+enable_swap() {
+    if swapon --show 2>/dev/null | grep -q .; then
+        log_ok "Swap already active ($(swapon --show=size --noheadings | tr -d ' '))"
+        return 0
+    fi
+
+    local ram_kb swap_mb
+    ram_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+    if (( ram_kb > 2097152 )); then
+        log_info "RAM > 2GB — skipping automatic swap (add one manually if you want it)"
+        return 0
+    fi
+
+    swap_mb=$(( ram_kb / 1024 ))
+    (( swap_mb > 2048 )) && swap_mb=2048
+    (( swap_mb < 512 )) && swap_mb=512
+
+    local swapfile=/swapfile
+    if [[ -f "$swapfile" ]]; then
+        log_warn "$swapfile exists but isn't active — leaving it alone, inspect manually"
+        return 0
+    fi
+
+    if ! fallocate -l "${swap_mb}M" "$swapfile" 2>/dev/null; then
+        dd if=/dev/zero of="$swapfile" bs=1M count="$swap_mb" status=none
+    fi
+    chmod 600 "$swapfile"
+    mkswap "$swapfile" >/dev/null
+    if ! swapon "$swapfile"; then
+        log_warn "Created ${swap_mb}MB swapfile but swapon failed (container/kernel restriction?) — removing"
+        rm -f "$swapfile"
+        return 0
+    fi
+    grep -q "^${swapfile} " /etc/fstab 2>/dev/null || echo "${swapfile} none swap sw 0 0" >> /etc/fstab
+
+    cat > /etc/sysctl.d/99-vpn-swap.conf <<'SYSCTL'
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+SYSCTL
+    sysctl --system >/dev/null || true
+
+    log_ok "Swap enabled: ${swap_mb}MB ($swapfile), swappiness=10"
+}
+
 raise_service_nofile() {
     local conf=/etc/systemd/system.conf.d/99-vpn-limits.conf
     if [[ -f "$conf" ]] && grep -q '^DefaultLimitNOFILE=65535$' "$conf"; then

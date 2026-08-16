@@ -30,6 +30,8 @@ main() {
     check_root
     check_os
     enable_bbr
+    tune_network_buffers
+    enable_swap
     raise_service_nofile
 
     # Guard: prevent accidental re-setup on a configured server

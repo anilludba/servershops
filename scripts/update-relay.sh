@@ -34,6 +34,8 @@ main() {
 
     check_root
     enable_bbr
+    tune_network_buffers
+    enable_swap
     raise_service_nofile
 
     # Backup 3X-UI database before any changes

@@ -41,6 +41,8 @@ main() {
 
     check_root
     enable_bbr
+    tune_network_buffers
+    enable_swap
     raise_service_nofile
 
     # --- Step 1: Validate existing installation ---
