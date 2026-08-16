@@ -261,18 +261,49 @@ SYSCTL
 # pages under mild pressure — the latter shows up as real added latency on
 # whichever connection got paged out.
 enable_swap() {
+    # Swappiness/cache-pressure apply regardless of WHERE swap comes from —
+    # our own swapfile, or one the VPS provider pre-configured on the image.
+    # Written and applied FIRST, unconditionally, before the exists/create
+    # branch below: a server that already had swap before this project ever
+    # touched it still gets tuned here, not just detected-and-skipped like
+    # the previous version of this function did (confirmed on a live relay:
+    # a 1GB provider-supplied swap was found and left completely untuned).
+    cat > /etc/sysctl.d/99-vpn-swap.conf <<'SYSCTL'
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+SYSCTL
+    sysctl --system >/dev/null || true
+
+    local ram_kb
+    ram_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+
     if swapon --show 2>/dev/null | grep -q .; then
-        log_ok "Swap already active ($(swapon --show=size --noheadings | tr -d ' '))"
+        local existing_mb target_mb
+        existing_mb=$(swapon --show=size --noheadings --bytes 2>/dev/null | awk '{s+=$1} END {print int(s/1024/1024)}')
+        # Same sizing heuristic as the fresh-create path below, reused here
+        # only as a comparison floor — never used to auto-resize. Resizing
+        # existing swap means swapoff first, which is a real (if brief)
+        # window with no OOM cushion on a box that may be low on RAM for
+        # exactly the reason it needs swap — not something to do
+        # unattended. Warn and let the operator decide.
+        if (( ram_kb <= 2097152 )); then
+            target_mb=$(( ram_kb / 1024 ))
+            (( target_mb > 2048 )) && target_mb=2048
+            (( target_mb < 512 )) && target_mb=512
+            if (( existing_mb < target_mb / 2 )); then
+                log_warn "Existing swap is ${existing_mb}MB — small for ${target_mb}MB of RAM. Not resizing automatically (would need a swapoff window); consider it manually if OOM issues show up."
+            fi
+        fi
+        log_ok "Swap already active (${existing_mb}MB), swappiness=10/cache-pressure=50 applied"
         return 0
     fi
 
-    local ram_kb swap_mb
-    ram_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
     if (( ram_kb > 2097152 )); then
         log_info "RAM > 2GB — skipping automatic swap (add one manually if you want it)"
         return 0
     fi
 
+    local swap_mb
     swap_mb=$(( ram_kb / 1024 ))
     (( swap_mb > 2048 )) && swap_mb=2048
     (( swap_mb < 512 )) && swap_mb=512
@@ -294,12 +325,6 @@ enable_swap() {
         return 0
     fi
     grep -q "^${swapfile} " /etc/fstab 2>/dev/null || echo "${swapfile} none swap sw 0 0" >> /etc/fstab
-
-    cat > /etc/sysctl.d/99-vpn-swap.conf <<'SYSCTL'
-vm.swappiness=10
-vm.vfs_cache_pressure=50
-SYSCTL
-    sysctl --system >/dev/null || true
 
     log_ok "Swap enabled: ${swap_mb}MB ($swapfile), swappiness=10"
 }
