@@ -340,6 +340,16 @@ main() {
         xui_api_request GET "inbounds/list" >/dev/null 2>&1 && break
     done
 
+    # install.sh's own internal `x-ui setting -getApiToken true` call (used
+    # to compose the "API Token:" line in its own printed summary) creates a
+    # non-idempotent "install"-named token as a side effect of every fresh
+    # install — separate from and in addition to the "vpn-cli" token
+    # bootstrap_api_token() manages above. See update-relay.sh's --upgrade
+    # path for the fuller explanation (upstream main.go:GetApiToken) and why
+    # this project sweeps it rather than leaving it sitting enabled, unused,
+    # in the DB.
+    sqlite3 "$XUI_DB" "DELETE FROM api_tokens WHERE name != 'vpn-cli';" 2>/dev/null || true
+
     # Create the relay inbound and seed default-user via the API (both land in the
     # normalized clients/client_inbounds tables — fixes #44). create_3xui_relay_inbound
     # adds the seed client itself and returns nothing on stdout.

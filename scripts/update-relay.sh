@@ -182,8 +182,26 @@ main() {
             else
                 log_warn "3X-UI API token still not accepted after re-bootstrap — see: sqlite3 $XUI_DB \"SELECT * FROM api_tokens;\""
             fi
-        fi
 
+            # install.sh's own `x-ui setting -getApiToken true` (called
+            # internally during the upgrade above, to compose the printed
+            # Access URL) is NOT idempotent — every single run unconditionally
+            # creates a fresh token: named "install" if none existed yet, or
+            # "cli-fallback-<unix-time>" from then on (see upstream main.go's
+            # GetApiToken). Confirmed on a live relay: an "install" row
+            # appeared after this exact upgrade path, timestamped right when
+            # the installer ran, with nothing in this project's own code
+            # responsible for it. Left alone, every future --upgrade adds one
+            # more unused, still-enabled token — harmless individually, but
+            # unbounded DB clutter (and one more valid-forever credential) over
+            # the server's life. Sweep anything that isn't our own row.
+            local stray_tokens
+            stray_tokens=$(sqlite3 "$XUI_DB" "SELECT COUNT(*) FROM api_tokens WHERE name != 'vpn-cli';" 2>/dev/null) || stray_tokens=0
+            if [[ "$stray_tokens" -gt 0 ]]; then
+                sqlite3 "$XUI_DB" "DELETE FROM api_tokens WHERE name != 'vpn-cli';"
+                log_info "Removed $stray_tokens stray API token(s) the installer created (install/cli-fallback-*)"
+            fi
+        fi
 
         if [[ "$is_selfsteal" == true ]]; then
             log_info "Upgrading Caddy..."
