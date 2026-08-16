@@ -34,21 +34,29 @@ xui_api_token() {
 # MUST be called inside an `x-ui stop` ... `x-ui start` window (the panel may cache
 # api_tokens at boot). 48 hex chars via openssl (NOT tr|head — SIGPIPE under
 # pipefail). created_at = epoch millis.
+#
+# v3.3.1+ stores api_tokens.token as SHA-256(plaintext), not the plaintext itself
+# (see upstream internal/web/service/panel/api_token.go — ApiTokenService.Match()
+# hashes the presented Bearer token and compares against the stored value). The
+# client (this project's xui-api.sh, vpn CLI, etc.) still sends and stores the
+# plaintext in $XUI_API_TOKEN_FILE — only what lands in the DB changes.
 bootstrap_api_token() {
-    local token existing
+    local token existing token_hash
     if [[ -r "$XUI_API_TOKEN_FILE" ]]; then
         token=$(cat "$XUI_API_TOKEN_FILE")
+        token_hash=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
         existing=$(sqlite3 "$XUI_DB" \
-            "SELECT COUNT(*) FROM api_tokens WHERE token='${token//\'/\'\'}' AND enabled=1;" 2>/dev/null) || existing=0
+            "SELECT COUNT(*) FROM api_tokens WHERE token='${token_hash//\'/\'\'}' AND enabled=1;" 2>/dev/null) || existing=0
         if [[ "$existing" == "1" ]]; then
             log_info "Reusing existing API token ($XUI_API_TOKEN_FILE)"
             return 0
         fi
     fi
     token=$(openssl rand -hex 24)
+    token_hash=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
     sqlite3 "$XUI_DB" "DELETE FROM api_tokens WHERE name='vpn-cli';"
     sqlite3 "$XUI_DB" "INSERT INTO api_tokens (name, token, enabled, created_at) \
-        VALUES ('vpn-cli', '${token}', 1, strftime('%s','now')*1000);"
+        VALUES ('vpn-cli', '${token_hash}', 1, strftime('%s','now')*1000);"
     mkdir -p "$(dirname "$XUI_API_TOKEN_FILE")"
     printf '%s' "$token" > "$XUI_API_TOKEN_FILE"
     chmod 0600 "$XUI_API_TOKEN_FILE"
